@@ -495,7 +495,7 @@ export default async function (ctx) {
       ws.onopen = async () => {
         connecting = false
         setStatus('connected')
-        ctx.toast.success('已连接到 WinIsland')
+        ctx.toast.success('已连接到 EchoMusic-Lyrics-WinIsland')
 
         let sentMusicData = false
         try {
