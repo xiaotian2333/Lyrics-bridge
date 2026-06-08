@@ -23,8 +23,8 @@ export default async function (ctx) {
     const label = statusEl.querySelector('.label')
     if (!dot || !label) return
     const map = {
-      connected: { text: 'WinIsland 已连接' },
-      disconnected: { text: 'WinIsland 未连接' },
+      connected: { text: 'EchoMusic-Lyrics-WinIsland 已连接' },
+      disconnected: { text: 'EchoMusic-Lyrics-WinIsland 未连接' },
       connecting: { text: '连接中...' },
     }
     label.textContent = map[status]?.text || status
@@ -169,7 +169,7 @@ export default async function (ctx) {
       }
 
       if (msg.type === 'state' && msg.payload?.media) {
-        // 可选的：根据 WinIsland 端 media 信息做同步
+        // 可选的：根据 EchoMusic-Lyrics-WinIsland 端 media 信息做同步
       }
     } catch (e) {
       // 忽略解析错误
@@ -254,9 +254,9 @@ export default async function (ctx) {
     const container = document.createElement('div')
     container.style.padding = '8px 12px'
     container.innerHTML = `
-      <div class="winisland-status disconnected">
+      <div class="EchoMusic-Lyrics-WinIsland-status disconnected">
         <span class="dot"></span>
-        <span class="label">WinIsland 未连接</span>
+        <span class="label">EchoMusic-Lyrics-WinIsland 未连接</span>
       </div>
     `
     statusEl = container.querySelector('.winisland-status')
@@ -318,9 +318,9 @@ export default async function (ctx) {
           await ctx.storage.set('autoReconnect', Boolean(autoReconnect.value))
           disconnect()
           await connect()
-          ctx.toast.success('WinIsland 设置已保存')
+          ctx.toast.success('EchoMusic-Lyrics-WinIsland 设置已保存')
         } catch {
-          ctx.toast.warning('WinIsland 设置保存失败')
+          ctx.toast.warning('EchoMusic-Lyrics-WinIsland 设置保存失败')
         } finally {
           saving.value = false
         }
@@ -364,7 +364,7 @@ export default async function (ctx) {
         h('div', { style: rowStyle }, [
           h('div', null, [
             h('div', { style: labelStyle }, '服务端地址'),
-            h('div', { style: descriptionStyle }, 'WinIsland WebSocket 服务地址'),
+            h('div', { style: descriptionStyle }, 'EchoMusic-Lyrics-WinIsland WebSocket 服务地址'),
           ]),
           h('input', {
             value: serverUrl.value,
@@ -417,9 +417,9 @@ export default async function (ctx) {
   }
 
   ctx.ui.settings.define({
-    id: 'connection',
-    title: 'WinIsland 桥接',
-    description: '将歌词和播放状态推送到 WinIsland WebSocket 服务',
+    id: 'Lyrics-bridge',
+    title: '歌词桥接工具',
+    description: '将 EchoMusic 的歌词和播放状态推送到外部歌词软件，并支持接收外部歌词软件的播放控制指令',
     component: SettingsPanel,
   })
 
