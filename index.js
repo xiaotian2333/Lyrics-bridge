@@ -528,7 +528,6 @@ export default async function (ctx) {
         if (source === 'server') {
           switch (action) {
             case 'request_MusicData':
-            case 'request_lyrics':
               void sendMusicData({ force: true, reason: 'request' })
               break
             case 'show_notification':
