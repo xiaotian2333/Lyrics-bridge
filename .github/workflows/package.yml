@@ -1,0 +1,195 @@
+name: Package Lyrics-bridge
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      architecture:
+        description: 'EchoMusic-Lyrics-WinIsland exe 架构后缀，例如 AMD64'
+        required: true
+        default: 'AMD64'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Package Lyrics-bridge.zip
+    runs-on: ubuntu-latest
+    env:
+      PACKAGE_NAME: Lyrics-bridge.zip
+      WINISLAND_REPO: xiaotian2333/EchoMusic-Lyrics-WinIsland
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve package inputs
+        id: vars
+        shell: bash
+        env:
+          DISPATCH_ARCHITECTURE: ${{ github.event.inputs.architecture || 'AMD64' }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          architecture="${DISPATCH_ARCHITECTURE:-AMD64}"
+          architecture="${architecture//[[:space:]]/}"
+
+          if [[ -z "${architecture}" ]]; then
+            architecture='AMD64'
+          fi
+
+          release_api_url="https://api.github.com/repos/${WINISLAND_REPO}/releases/latest"
+          release_json_file="winisland-release.json"
+          curl --fail --silent --show-error --location \
+            -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            --output "${release_json_file}" \
+            "${release_api_url}"
+
+          winisland_version="$(python - "${release_json_file}" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], 'r', encoding='utf-8') as file:
+              data = json.load(file)
+          print(data.get('tag_name') or data.get('name') or '')
+          PY
+          )"
+          winisland_version="${winisland_version//[[:space:]]/}"
+
+          if [[ -z "${winisland_version}" ]]; then
+            echo '无法通过 GitHub API 获取 EchoMusic-Lyrics-WinIsland 最新版本号' >&2
+            exit 1
+          fi
+
+          commit_subject="$(git log -1 --format=%s "${GITHUB_SHA}")"
+          release_body_file="release-body.md"
+          python - "${commit_subject}" "${winisland_version}" "${architecture}" > "${release_body_file}" <<'PY'
+          import sys
+
+          subject = sys.argv[1].strip() or '更新 Lyrics-bridge'
+          version = sys.argv[2].strip()
+          architecture = sys.argv[3].strip()
+
+          print(f"## {subject}")
+          print()
+          print(f"- 打包 EchoMusic-Lyrics-WinIsland：`{version}`")
+          print(f"- 架构：`{architecture}`")
+          print("- 产物：`Lyrics-bridge.zip`")
+          PY
+
+          exe_name="EchoMusic-Lyrics-WinIsland-${architecture}.exe"
+          download_url="https://github.com/${WINISLAND_REPO}/releases/download/${winisland_version}/${exe_name}"
+
+          {
+            echo "winisland_version=${winisland_version}"
+            echo "architecture=${architecture}"
+            echo "exe_name=${exe_name}"
+            echo "download_url=${download_url}"
+          } >> "${GITHUB_OUTPUT}"
+
+          echo "将下载 ${download_url}"
+
+      - name: Stage plugin files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf package dist
+          mkdir -p package dist
+
+          git ls-files -z | while IFS= read -r -d '' file; do
+            case "${file}" in
+              .github/*|package/*|dist/*)
+                continue
+                ;;
+            esac
+
+            target_dir="package/$(dirname "${file}")"
+            mkdir -p "${target_dir}"
+            cp "${file}" "package/${file}"
+          done
+
+          if [[ ! -f package/manifest.json || ! -f package/index.js ]]; then
+            echo '插件包缺少 manifest.json 或 index.js' >&2
+            exit 1
+          fi
+
+      - name: Download EchoMusic-Lyrics-WinIsland executable
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-delay 5 \
+            --output "package/${{ steps.vars.outputs.exe_name }}" \
+            "${{ steps.vars.outputs.download_url }}"
+
+      - name: Create Lyrics-bridge.zip
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZIP_DEFLATED, ZipFile
+
+          package_dir = Path('package')
+          output = Path('dist/Lyrics-bridge.zip')
+
+          with ZipFile(output, 'w', ZIP_DEFLATED) as archive:
+              for path in sorted(package_dir.rglob('*')):
+                  if path.is_file():
+                      archive.write(path, path.relative_to(package_dir).as_posix())
+          PY
+
+          test -s "dist/${PACKAGE_NAME}"
+          ls -lh "dist/${PACKAGE_NAME}"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lyrics-bridge
+          path: dist/Lyrics-bridge.zip
+          if-no-files-found: error
+
+      - name: Upload zip to tag release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          tag="${GITHUB_REF_NAME}"
+          release_body_file="release-body.md"
+
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            gh release edit "${tag}" --notes-file "${release_body_file}"
+            gh release upload "${tag}" "dist/${PACKAGE_NAME}" --clobber
+          else
+            gh release create "${tag}" "dist/${PACKAGE_NAME}" --title "${tag}" --notes-file "${release_body_file}"
+          fi
+
+      - name: Write summary
+        shell: bash
+        run: |
+          {
+            echo '## Lyrics-bridge 打包完成'
+            echo
+            echo "- 产物：\`${PACKAGE_NAME}\`"
+            echo "- EchoMusic-Lyrics-WinIsland 版本：\`${{ steps.vars.outputs.winisland_version }}\`"
+            echo "- 架构：\`${{ steps.vars.outputs.architecture }}\`"
+            echo "- exe：\`${{ steps.vars.outputs.exe_name }}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
