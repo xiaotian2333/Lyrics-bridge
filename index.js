@@ -1,10 +1,10 @@
 export default async function (ctx) {
   const DEFAULT_SERVER_URL = 'ws://127.0.0.1:17195'
-  const RETRY_DELAYS = [300, 800, 1500, 3000, 5000]
   const COVER_SIZE = 400
   const COVER_TIMEOUT_MS = 5000
   const MAX_COVER_BYTES = 4 * 1024 * 1024
   const MAX_COVER_CACHE_SIZE = 20
+  const SEEK_THRESHOLD_MS = 2000
 
   let ws = null
   let pingTimer = null
@@ -15,11 +15,14 @@ export default async function (ctx) {
   let statusContainer = null
   let statusObserver = null
   let unsubNowPlaying = null
-  let lyricRetryTimers = []
   let latestSnapshot = null
   let lastTrackKey = ''
   let lastSentMusicDataKey = ''
-  let sendingMusicDataKey = ''
+  let lastIsPlaying = false
+  let lastPositionMs = 0
+  let lastPositionTimestamp = 0
+  let lastServerSeekTriggered = false
+  let serverSeekClearTimer = null
   let disposed = false
 
   const coverBase64Cache = new Map()
@@ -65,9 +68,12 @@ export default async function (ctx) {
     }
   }
 
-  const clearLyricRetryTimers = () => {
-    lyricRetryTimers.forEach(timer => clearTimeout(timer))
-    lyricRetryTimers = []
+  const sendPluginCommand = (action, data = {}) => {
+    return send({
+      type: 'command',
+      source: 'plugin',
+      payload: { action, data },
+    })
   }
 
   const getCurrentTrack = () => {
@@ -176,7 +182,7 @@ export default async function (ctx) {
     const chunkSize = 0x8000
     let binary = ''
 
-    for (let index = 0; index < bytes.length; index += chunkSize) {
+    for (let index = 0; index < bytes.byteLength; index += chunkSize) {
       const chunk = bytes.subarray(index, index + chunkSize)
       binary += String.fromCharCode(...chunk)
     }
@@ -233,29 +239,6 @@ export default async function (ctx) {
     return fetchCoverBase64(coverUrl)
   }
 
-  const getLoadedLyricHash = () => toText(unwrapValue(ctx.stores?.lyric?.loadedHash))
-
-  const hasRealLyrics = (snapshot, expectedTrackKey = '') => {
-    if (!snapshot?.playback || !snapshot?.lyric) return false
-
-    const trackKey = getTrackKey(snapshot)
-    if (!trackKey) return false
-    if (expectedTrackKey && trackKey !== expectedTrackKey) return false
-
-    const lyricLines = snapshot.lyric.lines
-    if (!Array.isArray(lyricLines) || lyricLines.length === 0) return false
-    if (snapshot.lyric.isLoading === true) return false
-    if (toText(snapshot.lyric.tips) === '歌词加载中...') return false
-
-    const lyricTrackId = toText(snapshot.lyric.trackId)
-    if (lyricTrackId && lyricTrackId !== trackKey) return false
-
-    const loadedHash = getLoadedLyricHash()
-    if (loadedHash && loadedHash !== trackKey) return false
-
-    return true
-  }
-
   const buildLyrics = (lyricLines) => lyricLines.map(line => ({
     time_ms: toMilliseconds(line?.time),
     text: String(line?.text ?? ''),
@@ -303,79 +286,154 @@ export default async function (ctx) {
 
   const sendMusicData = async (options = {}) => {
     const force = options.force === true
-    const expectedTrackKey = toText(options.expectedTrackKey)
 
     if (disposed || !isWsOpen()) return false
 
     let snapshot = latestSnapshot
-    if (!hasRealLyrics(snapshot, expectedTrackKey)) {
+    if (!snapshot) {
       snapshot = await refreshLatestSnapshot()
     }
-    if (!hasRealLyrics(snapshot, expectedTrackKey)) return false
+    if (!snapshot) return false
 
-    const trackKey = getTrackKey(snapshot)
-    const expectedKey = expectedTrackKey || trackKey
     const musicDataKey = getMusicDataKey(snapshot)
-
     if (!force && lastSentMusicDataKey === musicDataKey) return true
-    if (!force && sendingMusicDataKey === musicDataKey) return false
-
-    sendingMusicDataKey = musicDataKey
 
     try {
       const payload = await buildMusicDataPayload(snapshot)
-      const currentTrackKey = getTrackKey(latestSnapshot)
       if (disposed || !isWsOpen()) return false
+
+      const currentTrackKey = getTrackKey(latestSnapshot)
+      const expectedKey = options.expectedTrackKey || getTrackKey(snapshot)
       if (expectedKey && currentTrackKey && currentTrackKey !== expectedKey) return false
-      if (!hasRealLyrics(latestSnapshot || snapshot, expectedKey)) return false
 
       const sent = send({ type: 'MusicData', seq: nextSeq(), payload })
       if (sent) lastSentMusicDataKey = musicDataKey
       return sent
-    } finally {
-      if (sendingMusicDataKey === musicDataKey) sendingMusicDataKey = ''
+    } catch {
+      return false
     }
   }
 
-  const scheduleMusicDataRetry = (expectedTrackKey) => {
-    clearLyricRetryTimers()
-    const trackKey = toText(expectedTrackKey)
-    if (disposed || !trackKey) return
+  const detectTrackDirection = (newTrackId) => {
+    try {
+      const queue = ctx.playlist?.getActiveQueue?.() || []
+      if (!queue.length || !lastTrackKey) return 'next'
 
-    lyricRetryTimers = RETRY_DELAYS.map(delay => setTimeout(async () => {
-      const sentRealLyrics = await sendMusicData({ expectedTrackKey: trackKey, reason: `retry-${delay}` })
-      if (sentRealLyrics) clearLyricRetryTimers()
-    }, delay))
+      const matchesId = (item, id) => {
+        const itemId = toText(item?.id || item?.songId || item?.hash)
+        return itemId === id
+      }
+
+      const oldIndex = queue.findIndex(item => matchesId(item, lastTrackKey))
+      const newIndex = queue.findIndex(item => matchesId(item, newTrackId))
+
+      if (oldIndex >= 0 && newIndex >= 0) {
+        return newIndex > oldIndex ? 'next' : 'prev'
+      }
+    } catch {}
+
+    return 'next'
+  }
+
+  const getCurrentPositionMs = () => {
+    const playback = latestSnapshot?.playback || {}
+    return toMilliseconds(playback.currentTime || playback.position || 0)
+  }
+
+  const getCurrentAudioUrl = () => {
+    try {
+      const audioUrl = ctx.stores?.player?.currentAudioUrl
+      if (audioUrl) return audioUrl
+    } catch {}
+    const track = getCurrentTrack()
+    return track?.audioUrl || ''
   }
 
   const handleSnapshot = (snapshot) => {
-    latestSnapshot = snapshot
-    const trackKey = getTrackKey(snapshot)
-    if (!trackKey) return
+    if (disposed) return
 
-    if (trackKey !== lastTrackKey) {
-      lastTrackKey = trackKey
+    const oldSnapshot = latestSnapshot
+    latestSnapshot = snapshot
+
+    const playback = snapshot.playback || {}
+    const newTrackKey = getTrackKey(snapshot)
+    const newIsPlaying = playback.isPlaying === true
+    const newPositionMs = toMilliseconds(playback.currentTime || playback.position || 0)
+    const now = Date.now()
+
+    if (!newTrackKey) return
+
+    // 曲目切换
+    if (newTrackKey !== lastTrackKey) {
+      const prevTrackKey = lastTrackKey
+      lastTrackKey = newTrackKey
       lastSentMusicDataKey = ''
-      clearLyricRetryTimers()
-      if (isWsOpen()) scheduleMusicDataRetry(trackKey)
+      lastPositionMs = newPositionMs
+      lastPositionTimestamp = now
+      lastIsPlaying = newIsPlaying
+
+      if (isWsOpen()) {
+        const direction = prevTrackKey ? detectTrackDirection(newTrackKey) : 'next'
+        sendPluginCommand(direction, { position_ms: newPositionMs })
+        sendMusicData({ force: true, expectedTrackKey: newTrackKey })
+      }
       return
     }
 
-    if (isWsOpen() && hasRealLyrics(snapshot, trackKey)) {
-      const musicDataKey = getMusicDataKey(snapshot)
-      if (lastSentMusicDataKey === musicDataKey) {
-        clearLyricRetryTimers()
-        return
+    // 播放/暂停状态变化
+    if (newIsPlaying !== lastIsPlaying) {
+      lastIsPlaying = newIsPlaying
+      lastPositionMs = newPositionMs
+      lastPositionTimestamp = now
+      if (isWsOpen()) {
+        sendPluginCommand(newIsPlaying ? 'play' : 'pause', { position_ms: newPositionMs })
       }
+      return
+    }
 
-      void sendMusicData({ expectedTrackKey: trackKey, reason: 'snapshot' }).then((sent) => {
-        if (sent) clearLyricRetryTimers()
-      })
+    // 非自然 seek 检测（仅播放中）
+    if (newIsPlaying && lastPositionTimestamp > 0) {
+      const elapsed = now - lastPositionTimestamp
+      const expectedPosition = lastPositionMs + elapsed
+      const diff = Math.abs(newPositionMs - expectedPosition)
+
+      if (diff > SEEK_THRESHOLD_MS && !lastServerSeekTriggered) {
+        if (isWsOpen()) {
+          sendPluginCommand('seek', { position_ms: newPositionMs, cause: 'user' })
+        }
+      }
+      lastPositionMs = newPositionMs
+      lastPositionTimestamp = now
+    } else if (newIsPlaying) {
+      lastPositionMs = newPositionMs
+      lastPositionTimestamp = now
+    } else {
+      lastPositionMs = newPositionMs
+      lastPositionTimestamp = now
+    }
+
+    // 歌词数据变更（同曲目）
+    if (isWsOpen() && newTrackKey) {
+      const musicDataKey = getMusicDataKey(snapshot)
+      if (lastSentMusicDataKey && lastSentMusicDataKey !== musicDataKey) {
+        const lyricLines = snapshot.lyric?.lines || []
+        if (lyricLines.length > 0 || lastSentMusicDataKey) {
+          sendMusicData({ force: true, expectedTrackKey: newTrackKey })
+        }
+      }
     }
   }
 
   const initNowPlayingSubscription = async () => {
     await refreshLatestSnapshot()
+
+    // 初始化状态值
+    if (latestSnapshot) {
+      const playback = latestSnapshot.playback || {}
+      lastIsPlaying = playback.isPlaying === true
+      lastPositionMs = toMilliseconds(playback.currentTime || playback.position || 0)
+      lastPositionTimestamp = Date.now()
+    }
 
     if (!ctx.nowPlaying?.onSnapshot) return
 
@@ -413,50 +471,128 @@ export default async function (ctx) {
     if (text) ctx.toast.info(text, 4000)
   }
 
+  const handleUploadMusicFile = async (data) => {
+    const uploadUrl = data?.upload_url
+    if (!uploadUrl) return
+
+    const audioUrl = getCurrentAudioUrl()
+    if (!audioUrl) return
+
+    const track = getCurrentTrack()
+    const normalizedUploadUrl = uploadUrl.replace(/\/+$/, '') + '/Music-file-upload'
+
+    try {
+      const fetcher = ctx.net?.fetch || fetch
+      const audioResponse = await fetcher(audioUrl)
+      if (!audioResponse?.ok) return
+
+      const blob = await audioResponse.blob()
+
+      const headers = {
+        'Content-Type': blob.type || 'audio/mpeg',
+      }
+
+      if (track) {
+        const trackId = toText(track?.id || track?.songId || track?.hash)
+        if (trackId) headers['X-Music-Id'] = trackId
+        const title = toText(track?.title || track?.name)
+        if (title) headers['X-Music-Title'] = encodeURIComponent(title)
+        const artist = toText(track?.artist)
+        if (artist) headers['X-Music-Artist'] = encodeURIComponent(artist)
+      }
+
+      const uploadResponse = await fetcher(normalizedUploadUrl, {
+        method: 'POST',
+        headers,
+        body: blob,
+      })
+
+      if (uploadResponse.status !== 200) {
+        // 静默忽略非 200 响应
+      }
+    } catch {
+      // 静默忽略上传失败
+    }
+  }
+
   const handleMessage = (data) => {
     try {
       const msg = JSON.parse(data)
       if (msg.type === 'pong' || msg.type === 'ack') return
 
       if (msg.type === 'command') {
+        const source = msg.source || 'server'
         const action = msg.payload?.action
         const actionData = msg.payload?.data
 
-        switch (action) {
-          case 'request_track_lyrics':
-          case 'request_lyrics':
-            void sendMusicData({ force: true, reason: 'request' })
-            break
-          case 'show_notification':
-            showNotification(actionData)
-            break
-          case 'play':
-            ctx.player.play()
-            break
-          case 'pause':
-            ctx.player.pause()
-            break
-          case 'toggle_play':
-            ctx.player.toggle()
-            break
-          case 'next':
-            ctx.player.next()
-            break
-          case 'prev':
-            ctx.player.prev()
-            break
-          case 'seek': {
-            const seekSeconds = toSeekSeconds(actionData, msg.payload)
-            if (seekSeconds != null) {
-              ctx.player.seek(seekSeconds)
+        if (source === 'server') {
+          switch (action) {
+            case 'request_MusicData':
+            case 'request_lyrics':
+              void sendMusicData({ force: true, reason: 'request' })
+              break
+            case 'show_notification':
+              showNotification(actionData)
+              break
+            case 'get_playback_state': {
+              const positionMs = getCurrentPositionMs()
+              const snapshot = latestSnapshot
+              const playback = snapshot?.playback || {}
+              const durationMs = toMilliseconds(playback.duration || 0)
+              const isPlaying = playback.isPlaying === true
+              sendPluginCommand('position', {
+                position_ms: positionMs,
+                duration_ms: durationMs,
+                is_playing: isPlaying,
+              })
+              break
             }
-            break
+            case 'get_software_info': {
+              sendPluginCommand('software_info', {
+                name: ctx.manifest?.name || 'EchoMusic',
+                version: ctx.manifest?.version || '',
+                author: ctx.manifest?.author || '',
+              })
+              break
+            }
+            case 'upload_music_file':
+              void handleUploadMusicFile(actionData)
+              break
+            case 'play':
+              ctx.player.play()
+              break
+            case 'pause':
+              ctx.player.pause()
+              break
+            case 'toggle_play':
+              ctx.player.toggle()
+              break
+            case 'next':
+              ctx.player.next()
+              break
+            case 'prev':
+              ctx.player.prev()
+              break
+            case 'seek': {
+              const seekSeconds = toSeekSeconds(actionData, msg.payload)
+              if (seekSeconds != null) {
+                // 标记为由服务端触发的 seek，防闭环
+                lastServerSeekTriggered = true
+                if (serverSeekClearTimer) clearTimeout(serverSeekClearTimer)
+                serverSeekClearTimer = setTimeout(() => {
+                  lastServerSeekTriggered = false
+                  serverSeekClearTimer = null
+                }, 1500)
+                ctx.player.seek(seekSeconds)
+              }
+              break
+            }
           }
         }
       }
 
       if (msg.type === 'state' && msg.payload?.media) {
-        // 预留状态同步入口，当前协议暂不根据服务端 media 修改 EchoMusic 状态
+        // 预留状态同步入口
       }
     } catch {
       // 忽略解析错误
@@ -497,17 +633,12 @@ export default async function (ctx) {
         setStatus('connected')
         ctx.toast.success('已连接到 EchoMusic-Lyrics-WinIsland')
 
-        let sentMusicData = false
-        try {
-          await refreshLatestSnapshot()
-          sentMusicData = await sendMusicData({ force: true, reason: 'connect' })
-        } finally {
-          if (!disposed && isWsOpen()) {
-            subscribe()
-            startPing()
-            const trackKey = getTrackKey(latestSnapshot)
-            if (!sentMusicData && trackKey) scheduleMusicDataRetry(trackKey)
-          }
+        await refreshLatestSnapshot()
+        if (!disposed && isWsOpen()) {
+          // 连接成功后发送 MusicData（可能有歌词也可能没有）
+          await sendMusicData({ force: true, reason: 'connect' })
+          subscribe()
+          startPing()
         }
       }
 
@@ -732,7 +863,10 @@ export default async function (ctx) {
   // 清理函数
   ctx.dispose(() => {
     disposed = true
-    clearLyricRetryTimers()
+    if (serverSeekClearTimer) {
+      clearTimeout(serverSeekClearTimer)
+      serverSeekClearTimer = null
+    }
     disconnect()
     if (unsubNowPlaying) {
       unsubNowPlaying()
@@ -748,6 +882,8 @@ export default async function (ctx) {
     }
     statusEl = null
     latestSnapshot = null
+    lastTrackKey = ''
+    lastSentMusicDataKey = ''
     coverBase64Cache.clear()
   })
 }
