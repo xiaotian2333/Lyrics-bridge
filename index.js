@@ -23,6 +23,7 @@ export default async function (ctx) {
   let lastPositionTimestamp = 0
   let lastServerSeekTriggered = false
   let serverSeekClearTimer = null
+  let helperPids = []
   let disposed = false
 
   const coverBase64Cache = new Map()
@@ -728,12 +729,15 @@ export default async function (ctx) {
       const { h, ref, onMounted } = ctx.vue
       const serverUrl = ref(DEFAULT_SERVER_URL)
       const autoReconnect = ref(true)
+      const autoLaunch = ref(true)
       const saving = ref(false)
 
       const reload = async () => {
         const config = await getConfig()
         serverUrl.value = config.serverUrl
         autoReconnect.value = config.autoReconnect
+        const savedAutoLaunch = await ctx.storage.get('autoLaunch')
+        autoLaunch.value = savedAutoLaunch !== false
       }
 
       const saveAndReconnect = async () => {
@@ -744,6 +748,7 @@ export default async function (ctx) {
           serverUrl.value = nextServerUrl
           await ctx.storage.set('serverUrl', nextServerUrl)
           await ctx.storage.set('autoReconnect', Boolean(autoReconnect.value))
+          await ctx.storage.set('autoLaunch', Boolean(autoLaunch.value))
           disconnect()
           await connect()
           ctx.toast.success('EchoMusic-Lyrics-WinIsland 设置已保存')
@@ -822,6 +827,21 @@ export default async function (ctx) {
             },
           }),
         ]),
+        h('div', { style: rowStyle }, [
+          h('div', null, [
+            h('div', { style: labelStyle }, '自动启动辅助进程'),
+            h('div', { style: descriptionStyle }, 'EchoMusic 启动时自动运行 bridge 服务端'),
+          ]),
+          h('input', {
+            type: 'checkbox',
+            checked: autoLaunch.value,
+            disabled: saving.value,
+            style: { width: '20px', height: '20px', accentColor: 'var(--color-primary, #1a73e8)' },
+            onChange: (event) => {
+              autoLaunch.value = event.target.checked
+            },
+          }),
+        ]),
         h('div', { style: { display: 'flex', justifyContent: 'flex-end', paddingTop: '14px' } }, [
           h('button', {
             type: 'button',
@@ -859,6 +879,31 @@ export default async function (ctx) {
   // 启动连接
   await connect()
 
+  // 启动外部辅助进程
+  const launchHelper = async () => {
+    if (disposed) return
+
+    const platform = ctx.electron?.platform
+    if (platform !== 'win32') return
+
+    const isEnabled = await ctx.storage.get('autoLaunch')
+    if (isEnabled === false) return
+
+    const result = await ctx.process.launch({
+      executable: 'bin/EchoMusic-Lyrics-WinIsland.exe',
+      args: [],
+      cwd: 'bin',
+    })
+
+    if (result.ok) {
+      helperPids.push(result.pid)
+    } else if (!result.canceled) {
+      ctx.toast.warning(result.error || '启动辅助进程失败')
+    }
+  }
+
+  void launchHelper()
+
   // 清理函数
   ctx.dispose(() => {
     disposed = true
@@ -866,6 +911,13 @@ export default async function (ctx) {
       clearTimeout(serverSeekClearTimer)
       serverSeekClearTimer = null
     }
+
+    // 终止外部辅助进程
+    helperPids.forEach(pid => {
+      try { ctx.process.terminate(pid) } catch {}
+    })
+    helperPids = []
+
     disconnect()
     if (unsubNowPlaying) {
       unsubNowPlaying()

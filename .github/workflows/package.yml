@@ -128,12 +128,14 @@ jobs:
         run: |
           set -euo pipefail
 
+          mkdir -p package/bin
+
           curl \
             --fail \
             --location \
             --retry 3 \
             --retry-delay 5 \
-            --output "package/${{ steps.vars.outputs.exe_name }}" \
+            --output "package/bin/EchoMusic-Lyrics-WinIsland.exe" \
             "${{ steps.vars.outputs.download_url }}"
 
       - name: Create Lyrics-bridge.zip
@@ -191,5 +193,5 @@ jobs:
             echo "- 产物：\`${PACKAGE_NAME}\`"
             echo "- EchoMusic-Lyrics-WinIsland 版本：\`${{ steps.vars.outputs.winisland_version }}\`"
             echo "- 架构：\`${{ steps.vars.outputs.architecture }}\`"
-            echo "- exe：\`${{ steps.vars.outputs.exe_name }}\`"
+            echo "- exe：\`bin/EchoMusic-Lyrics-WinIsland.exe\`"
           } >> "${GITHUB_STEP_SUMMARY}"
