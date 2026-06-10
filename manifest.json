@@ -1,7 +1,7 @@
 {
   "id": "Lyrics-bridge",
   "name": "歌词桥接工具",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "将 EchoMusic 的歌词和播放状态推送到外部歌词软件，并支持接收外部歌词软件的播放控制指令",
   "author": "xiaotian2333",
   "main": "index.js",
