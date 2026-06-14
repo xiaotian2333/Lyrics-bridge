@@ -11,9 +11,6 @@ export default async function (ctx) {
   let reconnectTimer = null
   let connecting = false
   let seq = 0
-  let statusEl = null
-  let statusContainer = null
-  let statusObserver = null
   let unsubNowPlaying = null
   let latestSnapshot = null
   let lastTrackKey = ''
@@ -44,19 +41,6 @@ export default async function (ctx) {
     const serverUrl = toText(storedServerUrl) || DEFAULT_SERVER_URL
     const autoReconnect = await ctx.storage.get('autoReconnect')
     return { serverUrl, autoReconnect: autoReconnect !== false }
-  }
-
-  const setStatus = (status) => {
-    if (!statusEl) return
-    statusEl.className = `winisland-status ${status}`
-    const label = statusEl.querySelector('.label')
-    if (!label) return
-    const map = {
-      connected: { text: 'EchoMusic-Lyrics-WinIsland 已连接' },
-      disconnected: { text: 'EchoMusic-Lyrics-WinIsland 未连接' },
-      connecting: { text: '连接中...' },
-    }
-    label.textContent = map[status]?.text || status
   }
 
   const send = (msg) => {
@@ -662,7 +646,6 @@ export default async function (ctx) {
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
 
     connecting = true
-    setStatus('connecting')
 
     const { serverUrl } = await getConfig()
     if (disposed) {
@@ -675,7 +658,6 @@ export default async function (ctx) {
 
       ws.onopen = async () => {
         connecting = false
-        setStatus('connected')
         ctx.toast.success('已连接到 EchoMusic-Lyrics-WinIsland')
 
         await refreshLatestSnapshot()
@@ -693,7 +675,6 @@ export default async function (ctx) {
         connecting = false
         stopPing()
         ws = null
-        setStatus('disconnected')
         void scheduleReconnect()
       }
 
@@ -702,7 +683,6 @@ export default async function (ctx) {
       }
     } catch {
       connecting = false
-      setStatus('disconnected')
       void scheduleReconnect()
     }
   }
@@ -722,49 +702,6 @@ export default async function (ctx) {
       ws = null
     }
     connecting = false
-    setStatus('disconnected')
-  }
-
-  // 挂载状态指示器到侧边栏底部
-  const mountStatusIndicator = () => {
-    const container = document.createElement('div')
-    container.style.padding = '8px 12px'
-    container.innerHTML = `
-      <div class="winisland-status disconnected">
-        <span class="dot"></span>
-        <span class="label">EchoMusic-Lyrics-WinIsland 未连接</span>
-      </div>
-    `
-    statusContainer = container
-    statusEl = container.querySelector('.winisland-status')
-    if (!statusEl) return
-
-    statusEl.addEventListener('click', () => {
-      if (connecting) return
-      if (isWsOpen()) {
-        disconnect()
-      } else {
-        void connect()
-      }
-    })
-
-    const mount = () => {
-      if (disposed || !statusContainer) return
-      const sidebar = document.querySelector('.sidebar-footer, .sidebar-bottom, [class*="sidebar"]')
-      if (sidebar) {
-        sidebar.appendChild(statusContainer)
-        statusObserver?.disconnect()
-        statusObserver = null
-        return
-      }
-      if (!statusContainer.parentNode) {
-        document.body.appendChild(statusContainer)
-      }
-    }
-
-    statusObserver = new MutationObserver(mount)
-    statusObserver.observe(document.body, { childList: true, subtree: true })
-    mount()
   }
 
   // 设置面板
@@ -918,9 +855,6 @@ export default async function (ctx) {
 
   await initNowPlayingSubscription()
 
-  // 挂载状态指示
-  mountStatusIndicator()
-
   // 启动连接
   await connect()
 
@@ -968,15 +902,6 @@ export default async function (ctx) {
       unsubNowPlaying()
       unsubNowPlaying = null
     }
-    if (statusObserver) {
-      statusObserver.disconnect()
-      statusObserver = null
-    }
-    if (statusContainer) {
-      statusContainer.remove()
-      statusContainer = null
-    }
-    statusEl = null
     latestSnapshot = null
     lastTrackKey = ''
     lastSentMusicDataKey = ''

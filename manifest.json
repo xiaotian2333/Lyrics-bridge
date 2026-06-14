@@ -1,7 +1,7 @@
 {
   "id": "Lyrics-bridge",
   "name": "灵动岛歌词",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "仿灵动岛歌词插件",
   "author": "xiaotian2333",
   "path": "",
@@ -9,7 +9,6 @@
   "homepage": "https://github.com/xiaotian2333/Lyrics-bridge",
   "downloadUrl": "https://gh-mirror.928233.xyz/github/xiaotian2333/Lyrics-bridge/releases/download/latest/Lyrics-bridge.zip",
   "main": "index.js",
-  "style": "style.css",
   "capabilities": {
     "process": true
   },
