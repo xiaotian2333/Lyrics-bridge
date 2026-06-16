@@ -891,6 +891,15 @@ export default async function (ctx) {
       serverSeekClearTimer = null
     }
 
+    // 通知服务端插件被禁用
+    if (isWsOpen()) {
+      send({
+        type: 'command',
+        source: 'plugin',
+        payload: { action: 'disabled', data: {} },
+      })
+    }
+
     // 终止外部辅助进程
     helperPids.forEach(pid => {
       try { ctx.process.terminate(pid) } catch {}
