@@ -848,7 +848,7 @@ export default async function (ctx) {
 
   ctx.ui.settings.define({
     id: 'Lyrics-bridge',
-    title: '歌词桥接工具',
+    title: '灵动岛歌词',
     description: '将 EchoMusic 的歌词和播放状态推送到外部歌词软件，并支持接收外部歌词软件的播放控制指令',
     component: SettingsPanel,
   })

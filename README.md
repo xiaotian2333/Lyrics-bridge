@@ -1,6 +1,6 @@
 # Lyrics-bridge
 
-EchoMusic 歌词桥接工具，将 EchoMusic 的歌词和播放状态通过 WebSocket 实时推送到外部歌词软件，并支持接收外部歌词软件的播放控制指令。
+EchoMusic 灵动岛歌词插件，将 EchoMusic 的歌词和播放状态通过 WebSocket 实时推送到外部歌词软件，并支持接收外部歌词软件的播放控制指令。
 
 > 此插件不直接提供功能，仅作为桥接工具  
 > 建议搭配 [EchoMusic-Lyrics-WinIsland](https://github.com/xiaotian2333/EchoMusic-Lyrics-WinIsland) 使用
