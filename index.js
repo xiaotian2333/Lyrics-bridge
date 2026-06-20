@@ -12,9 +12,11 @@ export default async function (ctx) {
   let connecting = false
   let seq = 0
   let unsubNowPlaying = null
+  let unsubFavoriteWatch = null
   let latestSnapshot = null
   let lastTrackKey = ''
   let lastSentMusicDataKey = ''
+  let lastSentFavoriteStateKey = ''
   let lastIsPlaying = false
   let lastPositionMs = 0
   let lastPositionTimestamp = 0
@@ -84,6 +86,56 @@ export default async function (ctx) {
       .filter(Boolean)
 
     return candidates.includes(trackKey) ? track : null
+  }
+
+  const getTrackProtocolId = (track, playback = {}) => {
+    return toText(track?.id ?? track?.songId ?? playback.trackId ?? track?.hash ?? playback.lyricHash)
+  }
+
+  const getTrackIdentityCandidates = (track, playback = {}) => {
+    return [
+      track?.id,
+      track?.songId,
+      track?.hash,
+      track?.mixSongId,
+      track?.fileId,
+      playback.trackId,
+      playback.lyricHash,
+      unwrapValue(ctx.stores?.player?.currentTrackId),
+    ].map(toText).filter(Boolean)
+  }
+
+  const isFavoriteTrack = (track) => {
+    if (!track) return false
+    try {
+      return ctx.stores?.playlist?.isFavoriteSong?.(track) === true
+    } catch {
+      return false
+    }
+  }
+
+  const getFavoriteStateForSnapshot = (snapshot) => {
+    return isFavoriteTrack(getCurrentTrackForSnapshot(snapshot))
+  }
+
+  const getCurrentFavoriteWatchKey = () => {
+    const snapshot = latestSnapshot
+    const track = snapshot ? getCurrentTrackForSnapshot(snapshot) : getCurrentTrack()
+    const playback = snapshot?.playback || {}
+    const id = getTrackProtocolId(track, playback)
+    if (!id) return ''
+    return `${id}:${isFavoriteTrack(track) ? '1' : '0'}`
+  }
+
+  const parseFavoriteWatchKey = (key) => {
+    const text = toText(key)
+    if (!text) return { id: '', isFavorite: false }
+    const index = text.lastIndexOf(':')
+    if (index < 0) return { id: text, isFavorite: false }
+    return {
+      id: text.slice(0, index),
+      isFavorite: text.slice(index + 1) === '1',
+    }
   }
 
   const splitArtists = (value) => toText(value)
@@ -283,11 +335,12 @@ export default async function (ctx) {
 
     return {
       Metadata: {
-        id: toText(track?.id ?? track?.songId ?? playback.trackId ?? track?.hash ?? playback.lyricHash),
+        id: getTrackProtocolId(track, playback),
         title: toText(playback.title || track?.title || track?.name),
         artist: artistText,
         artists,
         cover_base64: coverBase64,
+        is_favorite: isFavoriteTrack(track),
       },
       lyrics: buildLyrics(snapshot.lyric.lines || []),
     }
@@ -311,7 +364,7 @@ export default async function (ctx) {
     const trackKey = getTrackKey(snapshot)
     const revision = Number(snapshot?.lyric?.revision || 0)
     const lineCount = Array.isArray(snapshot?.lyric?.lines) ? snapshot.lyric.lines.length : 0
-    return `${trackKey}:${revision}:${lineCount}`
+    return `${trackKey}:${revision}:${lineCount}:${getFavoriteStateForSnapshot(snapshot) ? 'fav' : 'normal'}`
   }
 
   const sendMusicData = async (options = {}) => {
@@ -377,6 +430,75 @@ export default async function (ctx) {
     } catch {}
     const track = getCurrentTrack()
     return track?.audioUrl || ''
+  }
+
+  const sendFavoriteState = (track, isFavorite, options = {}) => {
+    const snapshot = latestSnapshot
+    const playback = snapshot?.playback || {}
+    const id = getTrackProtocolId(track, playback)
+    if (!id) return false
+    const stateKey = `${id}:${isFavorite === true ? '1' : '0'}`
+    if (options.force !== true && lastSentFavoriteStateKey === stateKey) return true
+    const sent = sendPluginCommand('set_favorite', {
+      id,
+      is_favorite: isFavorite === true,
+    })
+    if (sent) lastSentFavoriteStateKey = stateKey
+    return sent
+  }
+
+  const handleSetFavorite = async (data) => {
+    if (typeof data?.is_favorite !== 'boolean') return
+    const track = getCurrentTrack()
+    if (!track) return
+
+    const snapshot = latestSnapshot
+    const playback = snapshot?.playback || {}
+    const requestedId = toText(data?.id)
+    if (requestedId) {
+      const candidates = getTrackIdentityCandidates(track, playback)
+      if (!candidates.includes(requestedId)) return
+    }
+
+    const shouldFavorite = data.is_favorite === true
+    const playlistStore = ctx.stores?.playlist
+    if (!playlistStore) return
+
+    const currentFavorite = isFavoriteTrack(track)
+    if (currentFavorite === shouldFavorite) {
+      sendFavoriteState(track, shouldFavorite, { force: true })
+      void sendMusicData({ force: true, reason: 'favorite-noop' })
+      return
+    }
+
+    try {
+      if (shouldFavorite) {
+        await playlistStore.addToFavorites?.(track)
+      } else if (typeof playlistStore.removeFavoriteSong === 'function') {
+        await playlistStore.removeFavoriteSong(track)
+      } else {
+        await playlistStore.removeFromFavorites?.(getTrackProtocolId(track, playback))
+      }
+
+      const nextFavorite = isFavoriteTrack(track)
+      sendFavoriteState(track, nextFavorite)
+      void sendMusicData({ force: true, reason: 'favorite-command' })
+    } catch {
+      // 收藏操作失败时保持静默，避免外部服务端误以为状态已切换
+    }
+  }
+
+  const handleFavoriteWatchChange = (nextKey, previousKey) => {
+    if (disposed || !isWsOpen()) return
+
+    const next = parseFavoriteWatchKey(nextKey)
+    const previous = parseFavoriteWatchKey(previousKey)
+    if (!next.id || !previous.id || next.id !== previous.id) return
+    if (next.isFavorite === previous.isFavorite) return
+
+    const track = getCurrentTrack()
+    sendFavoriteState(track, next.isFavorite)
+    void sendMusicData({ force: true, reason: 'favorite-change' })
   }
 
   const handleSnapshot = (snapshot) => {
@@ -471,6 +593,17 @@ export default async function (ctx) {
       if (disposed) return
       handleSnapshot(snapshot)
     })
+  }
+
+  const initFavoriteWatch = () => {
+    if (typeof ctx.vue?.watch !== 'function') return
+
+    unsubFavoriteWatch = ctx.vue.watch(
+      getCurrentFavoriteWatchKey,
+      (nextKey, previousKey) => {
+        handleFavoriteWatchChange(nextKey, previousKey)
+      },
+    )
   }
 
   const subscribe = () => {
@@ -586,6 +719,9 @@ export default async function (ctx) {
             }
             case 'upload_music_file':
               void handleUploadMusicFile(actionData)
+              break
+            case 'set_favorite':
+              void handleSetFavorite(actionData)
               break
             case 'play':
               ctx.player.play()
@@ -854,6 +990,7 @@ export default async function (ctx) {
   })
 
   await initNowPlayingSubscription()
+  initFavoriteWatch()
 
   // 启动连接
   await connect()
@@ -911,9 +1048,14 @@ export default async function (ctx) {
       unsubNowPlaying()
       unsubNowPlaying = null
     }
+    if (unsubFavoriteWatch) {
+      unsubFavoriteWatch()
+      unsubFavoriteWatch = null
+    }
     latestSnapshot = null
     lastTrackKey = ''
     lastSentMusicDataKey = ''
+    lastSentFavoriteStateKey = ''
     coverBase64Cache.clear()
   })
 }
