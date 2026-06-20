@@ -13,6 +13,6 @@
     "process": true
   },
   "requires": {
-    "echoMusicVersion": ">=2.2.6-beta.12"
+    "echoMusicVersion": ">=2.2.7-beta.12"
   }
 }

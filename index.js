@@ -413,7 +413,7 @@ export default async function (ctx) {
       if (oldIndex >= 0 && newIndex >= 0) {
         return newIndex > oldIndex ? 'next' : 'prev'
       }
-    } catch {}
+    } catch { }
 
     return 'next'
   }
@@ -427,7 +427,7 @@ export default async function (ctx) {
     try {
       const audioUrl = ctx.stores?.player?.currentAudioUrl
       if (audioUrl) return audioUrl
-    } catch {}
+    } catch { }
     const track = getCurrentTrack()
     return track?.audioUrl || ''
   }
@@ -634,6 +634,25 @@ export default async function (ctx) {
     if (text) ctx.toast.info(text, 4000)
   }
 
+  const handleShowMainWindow = async () => {
+
+    const isMainWindowForeground = () => {
+      try {
+        return document.visibilityState === 'visible' && document.hasFocus()
+      } catch {
+        return false
+      }
+    }
+    // 最小化时，拉起主窗口
+    const showMainWindow = ctx.electron?.miniPlayer?.command
+    if (typeof showMainWindow === 'function') {
+      showMainWindow('showMainWindow')
+      if (isMainWindowForeground()) return
+    }
+    // 拉起主窗口失败时，发送插件命令拉起主窗口
+    sendPluginCommand('show_main_window', {})
+  }
+
   const handleUploadMusicFile = async (data) => {
     const uploadUrl = data?.upload_url
     if (!uploadUrl) return
@@ -695,6 +714,9 @@ export default async function (ctx) {
               break
             case 'show_notification':
               showNotification(actionData)
+              break
+            case 'show_main_window':
+              void handleShowMainWindow()
               break
             case 'get_playback_state': {
               const positionMs = getCurrentPositionMs()
@@ -1039,7 +1061,7 @@ export default async function (ctx) {
 
     // 终止外部辅助进程
     helperPids.forEach(pid => {
-      try { ctx.process.terminate(pid) } catch {}
+      try { ctx.process.terminate(pid) } catch { }
     })
     helperPids = []
 
