@@ -98,28 +98,28 @@ jobs:
 
           echo "将下载 ${download_url}"
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies and build
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+
       - name: Stage plugin files
         shell: bash
         run: |
           set -euo pipefail
+          cp manifest.json dist/manifest.json
 
-          rm -rf package dist
-          mkdir -p package dist
-
-          git ls-files -z | while IFS= read -r -d '' file; do
-            case "${file}" in
-              .github/*|package/*|dist/*)
-                continue
-                ;;
-            esac
-
-            target_dir="package/$(dirname "${file}")"
-            mkdir -p "${target_dir}"
-            cp "${file}" "package/${file}"
-          done
-
-          if [[ ! -f package/manifest.json || ! -f package/index.js ]]; then
-            echo '插件包缺少 manifest.json 或 index.js' >&2
+          # 验证
+          if [[ ! -f dist/index.js || ! -f dist/manifest.json ]]; then
+            echo '构建产物缺少 index.js 或 manifest.json' >&2
             exit 1
           fi
 
@@ -128,14 +128,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p package/bin
+          mkdir -p dist/bin
 
           curl \
             --fail \
             --location \
             --retry 3 \
             --retry-delay 5 \
-            --output "package/bin/EchoMusic-Lyrics-WinIsland.exe" \
+            --output "dist/bin/EchoMusic-Lyrics-WinIsland.exe" \
             "${{ steps.vars.outputs.download_url }}"
 
       - name: Create Lyrics-bridge.zip
@@ -147,13 +147,13 @@ jobs:
           from pathlib import Path
           from zipfile import ZIP_DEFLATED, ZipFile
 
-          package_dir = Path('package')
+          source = Path('dist')
           output = Path('dist/Lyrics-bridge.zip')
 
           with ZipFile(output, 'w', ZIP_DEFLATED) as archive:
-              for path in sorted(package_dir.rglob('*')):
-                  if path.is_file():
-                      archive.write(path, path.relative_to(package_dir).as_posix())
+              for path in sorted(source.rglob('*')):
+                  if path.is_file() and path != output:
+                      archive.write(path, path.relative_to(source).as_posix())
           PY
 
           test -s "dist/${PACKAGE_NAME}"

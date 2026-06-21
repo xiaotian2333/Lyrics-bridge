@@ -1,0 +1,5 @@
+bin/
+*.zip
+*.exe
+dist/
+node_modules/
