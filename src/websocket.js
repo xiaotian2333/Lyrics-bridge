@@ -1,3 +1,11 @@
+import {
+  MAX_SEEK_SYNC_INTERVAL_MS,
+  MIN_SEEK_SYNC_INTERVAL_MS,
+  PING_INTERVAL_MS,
+  RECONNECT_DELAY_MS,
+  SEEK_MARK_CLEAR_DELAY_MS,
+  TOAST_DURATION_MS,
+} from './constants.js'
 import { getConfig } from './config.js'
 import { handleSetFavorite } from './favorite.js'
 import { sendMusicData } from './musicdata.js'
@@ -5,6 +13,7 @@ import { refreshLatestSnapshot } from './snapshot.js'
 import { nextSeq } from './state.js'
 import { getCurrentAudioUrl, getCurrentPositionMs, getCurrentTrack } from './track.js'
 import { toMilliseconds, toSeekSeconds, toText } from './utils.js'
+
 
 export function isWsOpen(state) {
   return state.ws && state.ws.readyState === WebSocket.OPEN
@@ -40,7 +49,7 @@ export function startPing(state) {
   if (state.pingTimer) clearInterval(state.pingTimer)
   state.pingTimer = setInterval(() => {
     send(state, { type: 'ping' })
-  }, 10000)
+  }, PING_INTERVAL_MS)
 }
 
 export function stopPing(state) {
@@ -49,11 +58,168 @@ export function stopPing(state) {
   state.pingTimer = null
 }
 
+function isSeekWsOpen(state) {
+  return state.seekWs && state.seekWs.readyState === WebSocket.OPEN
+}
+
+function normalizeSeekSyncInterval(data) {
+  const value = Number(data?.interval)
+  if (!Number.isFinite(value)) return null
+  if (value < MIN_SEEK_SYNC_INTERVAL_MS || value > MAX_SEEK_SYNC_INTERVAL_MS) return null
+  return Math.round(value)
+}
+
+function buildSeekSyncUrl(serverUrl) {
+  const rawUrl = toText(serverUrl)
+  if (!rawUrl) return ''
+
+  try {
+    const url = new URL(rawUrl)
+    url.pathname = '/seek'
+    url.search = ''
+    url.hash = ''
+    return url.toString()
+  } catch {
+    return rawUrl.replace(/\/+$/, '') + '/seek'
+  }
+}
+
+function clearSeekSyncTimer(state) {
+  if (!state.seekTimer) return
+  clearTimeout(state.seekTimer)
+  state.seekTimer = null
+}
+
+function clearSeekSyncState(state) {
+  clearSeekSyncTimer(state)
+
+  if (state.seekWs) {
+    state.seekWs.onopen = null
+    state.seekWs.onmessage = null
+    state.seekWs.onclose = null
+    state.seekWs.onerror = null
+    try { state.seekWs.close() } catch { }
+    state.seekWs = null
+  }
+
+  state.seekConnecting = false
+  state.seekInterval = 0
+}
+
+function stopSeekSync(state) {
+  state.seekSyncToken += 1
+  clearSeekSyncState(state)
+}
+
+function sendSeekSyncPosition(state) {
+  if (state.disposed || !isSeekWsOpen(state)) return false
+
+  const playback = state.latestSnapshot?.playback || {}
+
+  try {
+    state.seekWs.send(JSON.stringify({
+      position_ms: getCurrentPositionMs(state),
+      is_playing: playback.isPlaying === true,
+    }))
+    return true
+  } catch {
+    stopSeekSync(state)
+    return false
+  }
+}
+
+function scheduleSeekSyncPush(state) {
+  clearSeekSyncTimer(state)
+  if (state.disposed || !state.seekInterval || !isSeekWsOpen(state)) return
+
+  state.seekTimer = setTimeout(() => {
+    state.seekTimer = null
+    if (!sendSeekSyncPosition(state)) return
+    scheduleSeekSyncPush(state)
+  }, state.seekInterval)
+}
+
+async function startSeekSync(state, ctx, data) {
+  const interval = normalizeSeekSyncInterval(data)
+  if (interval == null) {
+    stopSeekSync(state)
+    return
+  }
+
+  const token = state.seekSyncToken + 1
+  state.seekSyncToken = token
+  clearSeekSyncState(state)
+  state.seekInterval = interval
+  state.seekConnecting = true
+
+  let serverUrl = ''
+  try {
+    serverUrl = (await getConfig(ctx)).serverUrl
+  } catch {
+    if (state.seekSyncToken === token) stopSeekSync(state)
+    return
+  }
+
+  if (state.disposed || state.seekSyncToken !== token) return
+
+  const seekUrl = buildSeekSyncUrl(serverUrl)
+  if (!seekUrl) {
+    stopSeekSync(state)
+    return
+  }
+
+  try {
+    const socket = new WebSocket(seekUrl)
+    state.seekWs = socket
+    state.seekConnecting = true
+
+    socket.onopen = () => {
+      if (state.disposed || state.seekSyncToken !== token || state.seekWs !== socket) {
+        try { socket.close() } catch { }
+        return
+      }
+
+      state.seekConnecting = false
+      if (!sendSeekSyncPosition(state)) return
+      scheduleSeekSyncPush(state)
+    }
+
+    socket.onclose = () => {
+      if (state.seekWs !== socket) return
+      state.seekSyncToken += 1
+      clearSeekSyncTimer(state)
+      state.seekWs = null
+      state.seekConnecting = false
+      state.seekInterval = 0
+    }
+
+    socket.onerror = () => {
+      if (state.seekWs === socket) stopSeekSync(state)
+    }
+  } catch {
+    if (state.seekSyncToken === token) stopSeekSync(state)
+  }
+}
+
+function updateSeekSync(state, data) {
+  const interval = normalizeSeekSyncInterval(data)
+  if (interval == null) {
+    stopSeekSync(state)
+    return
+  }
+
+  // update 只调整已启动的 /seek 同步，不负责主动建立连接。
+  if (!state.seekWs && !state.seekConnecting && !state.seekTimer) return
+
+  state.seekInterval = interval
+  if (isSeekWsOpen(state)) scheduleSeekSyncPush(state)
+}
+
 export function showNotification(ctx, data) {
   const title = toText(data?.title)
   const message = toText(data?.message)
   const text = [title, message].filter(Boolean).join(': ')
-  if (text) ctx.toast.info(text, 4000)
+  if (text) ctx.toast.info(text, TOAST_DURATION_MS)
 }
 
 export async function handleShowMainWindow(state, ctx) {
@@ -168,6 +334,15 @@ export function handleMessage(state, ctx, data) {
           case 'set_favorite':
             void handleSetFavorite(state, ctx, actionData)
             break
+          case 'start_seek_sync':
+            void startSeekSync(state, ctx, actionData)
+            break
+          case 'update_seek_sync':
+            updateSeekSync(state, actionData)
+            break
+          case 'stop_seek_sync':
+            stopSeekSync(state)
+            break
           case 'play':
             ctx.player.play()
             break
@@ -192,7 +367,7 @@ export function handleMessage(state, ctx, data) {
               state.serverSeekClearTimer = setTimeout(() => {
                 state.lastServerSeekTriggered = false
                 state.serverSeekClearTimer = null
-              }, 1500)
+              }, SEEK_MARK_CLEAR_DELAY_MS)
               ctx.player.seek(seekSeconds)
             }
             break
@@ -215,7 +390,7 @@ export async function scheduleReconnect(state, ctx) {
   state.reconnectTimer = setTimeout(() => {
     state.reconnectTimer = null
     void connect(state, ctx)
-  }, 5000)
+  }, RECONNECT_DELAY_MS)
 }
 
 export async function connect(state, ctx) {
@@ -252,6 +427,7 @@ export async function connect(state, ctx) {
     socket.onclose = () => {
       state.connecting = false
       stopPing(state)
+      stopSeekSync(state)
       if (state.ws === socket) state.ws = null
       void scheduleReconnect(state, ctx)
     }
@@ -271,6 +447,7 @@ export function disconnect(state) {
     state.reconnectTimer = null
   }
   stopPing(state)
+  stopSeekSync(state)
   if (state.ws) {
     state.ws.onopen = null
     state.ws.onmessage = null

@@ -1,9 +1,14 @@
 export function createState() {
   return {
     ws: null,
+    seekWs: null,
     pingTimer: null,
+    seekTimer: null,
     reconnectTimer: null,
     connecting: false,
+    seekConnecting: false,
+    seekInterval: 0,
+    seekSyncToken: 0,
     seq: 0,
     unsubNowPlaying: null,
     unsubFavoriteWatch: null,
