@@ -112,6 +112,18 @@ export function getCurrentPositionMs(state) {
   return toMilliseconds(playback.currentTime || playback.position || 0)
 }
 
+export function getInterpolatedPositionMs(state) {
+  const playback = state.latestSnapshot?.playback || {}
+  const isPlaying = playback.isPlaying === true
+
+  if (isPlaying && state.lastPositionTimestamp > 0) {
+    const elapsed = Date.now() - state.lastPositionTimestamp
+    return state.lastPositionMs + elapsed
+  }
+
+  return getCurrentPositionMs(state)
+}
+
 export function getCurrentAudioUrl(ctx) {
   try {
     const audioUrl = ctx.stores?.player?.currentAudioUrl

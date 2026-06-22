@@ -11,7 +11,7 @@ import { handleSetFavorite } from './favorite.js'
 import { sendMusicData } from './musicdata.js'
 import { refreshLatestSnapshot } from './snapshot.js'
 import { nextSeq } from './state.js'
-import { getCurrentAudioUrl, getCurrentPositionMs, getCurrentTrack } from './track.js'
+import { getCurrentAudioUrl, getCurrentPositionMs, getCurrentTrack, getInterpolatedPositionMs } from './track.js'
 import { toMilliseconds, toSeekSeconds, toText } from './utils.js'
 
 
@@ -118,7 +118,7 @@ function sendSeekSyncPosition(state) {
 
   try {
     state.seekWs.send(JSON.stringify({
-      position_ms: getCurrentPositionMs(state),
+      position_ms: getInterpolatedPositionMs(state),
       is_playing: playback.isPlaying === true,
     }))
     return true
@@ -308,7 +308,7 @@ export function handleMessage(state, ctx, data) {
             void handleShowMainWindow(state, ctx)
             break
           case 'get_playback_state': {
-            const positionMs = getCurrentPositionMs(state)
+            const positionMs = getInterpolatedPositionMs(state)
             const snapshot = state.latestSnapshot
             const playback = snapshot?.playback || {}
             const durationMs = toMilliseconds(playback.duration || 0)
