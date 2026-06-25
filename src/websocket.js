@@ -13,6 +13,7 @@ import { refreshLatestSnapshot } from './snapshot.js'
 import { nextSeq } from './state.js'
 import { getCurrentAudioUrl, getCurrentPositionMs, getCurrentTrack, getInterpolatedPositionMs } from './track.js'
 import { toMilliseconds, toSeekSeconds, toText } from './utils.js'
+import { handleSetVolume, sendVolumeState } from './volume.js'
 
 
 export function isWsOpen(state) {
@@ -331,6 +332,9 @@ export function handleMessage(state, ctx, data) {
           case 'upload_music_file':
             void handleUploadMusicFile(ctx, actionData)
             break
+          case 'set_volume':
+            handleSetVolume(state, ctx, actionData)
+            break
           case 'set_favorite':
             void handleSetFavorite(state, ctx, actionData)
             break
@@ -412,6 +416,10 @@ export async function connect(state, ctx) {
     socket.onopen = async () => {
       state.connecting = false
       ctx.toast.success('已连接到 EchoMusic-Lyrics-WinIsland')
+
+      if (!state.disposed && isWsOpen(state)) {
+        sendVolumeState(state, ctx, { force: true })
+      }
 
       await refreshLatestSnapshot(state, ctx)
       if (!state.disposed && isWsOpen(state)) {

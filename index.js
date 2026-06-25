@@ -2,6 +2,7 @@ import { initFavoriteWatch } from './src/favorite.js'
 import { initNowPlayingSubscription } from './src/snapshot.js'
 import { createState } from './src/state.js'
 import { defineSettings } from './src/settings.js'
+import { initVolumeWatch } from './src/volume.js'
 import { connect, disconnect, isWsOpen, send } from './src/websocket.js'
 
 async function launchHelper(state, ctx) {
@@ -57,10 +58,15 @@ function disposeBridge(state, ctx) {
     state.unsubFavoriteWatch()
     state.unsubFavoriteWatch = null
   }
+  if (state.unsubVolumeWatch) {
+    state.unsubVolumeWatch()
+    state.unsubVolumeWatch = null
+  }
   state.latestSnapshot = null
   state.lastTrackKey = ''
   state.lastSentMusicDataKey = ''
   state.lastSentFavoriteStateKey = ''
+  state.lastSentVolumeKey = ''
   state.coverBase64Cache.clear()
 }
 
@@ -71,6 +77,7 @@ export default async function (ctx) {
 
   await initNowPlayingSubscription(state, ctx)
   initFavoriteWatch(state, ctx)
+  initVolumeWatch(state, ctx)
   await connect(state, ctx)
   void launchHelper(state, ctx)
 
