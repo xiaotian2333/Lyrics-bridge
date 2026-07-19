@@ -9,6 +9,7 @@ import {
 import { getConfig } from './config.js'
 import { handleSetFavorite } from './favorite.js'
 import { sendMusicData } from './musicdata.js'
+import { handleSetPlayMode, sendPlayModeState } from './playmode.js'
 import { refreshLatestSnapshot } from './snapshot.js'
 import { nextSeq } from './state.js'
 import { getCurrentAudioUrl, getCurrentPositionMs, getCurrentTrack, getInterpolatedPositionMs } from './track.js'
@@ -338,6 +339,9 @@ export function handleMessage(state, ctx, data) {
           case 'set_favorite':
             void handleSetFavorite(state, ctx, actionData)
             break
+          case 'set_play_mode':
+            handleSetPlayMode(state, ctx, actionData)
+            break
           case 'start_seek_sync':
             void startSeekSync(state, ctx, actionData)
             break
@@ -419,6 +423,7 @@ export async function connect(state, ctx) {
 
       if (!state.disposed && isWsOpen(state)) {
         sendVolumeState(state, ctx, { force: true })
+        sendPlayModeState(state, ctx, { force: true })
       }
 
       await refreshLatestSnapshot(state, ctx)

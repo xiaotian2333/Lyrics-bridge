@@ -1,4 +1,5 @@
 import { initFavoriteWatch } from './src/favorite.js'
+import { initPlayModeWatch } from './src/playmode.js'
 import { initNowPlayingSubscription } from './src/snapshot.js'
 import { createState } from './src/state.js'
 import { defineSettings } from './src/settings.js'
@@ -62,6 +63,10 @@ function disposeBridge(state, ctx) {
     state.unsubVolumeWatch()
     state.unsubVolumeWatch = null
   }
+  if (state.unsubPlayModeWatch) {
+    state.unsubPlayModeWatch()
+    state.unsubPlayModeWatch = null
+  }
   state.latestSnapshot = null
   state.lastTrackKey = ''
   state.lastSentMusicDataKey = ''
@@ -78,6 +83,7 @@ export default async function (ctx) {
   await initNowPlayingSubscription(state, ctx)
   initFavoriteWatch(state, ctx)
   initVolumeWatch(state, ctx)
+  initPlayModeWatch(state, ctx)
   await connect(state, ctx)
   void launchHelper(state, ctx)
 

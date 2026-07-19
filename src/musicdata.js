@@ -10,6 +10,7 @@ import {
   getTrackProtocolId,
   isFavoriteTrack,
 } from './track.js'
+import { getCurrentPlayMode } from './playmode.js'
 import { toText } from './utils.js'
 import { isWsOpen, send } from './websocket.js'
 
@@ -28,6 +29,7 @@ export async function buildMusicDataPayload(state, ctx, snapshot) {
       artists,
       cover_base64: coverBase64,
       is_favorite: isFavoriteTrack(ctx, track),
+      play_mode: getCurrentPlayMode(ctx),
     },
     lyrics: buildLyrics(snapshot.lyric.lines || []),
   }
@@ -37,7 +39,8 @@ export function getMusicDataKey(ctx, snapshot) {
   const trackKey = getTrackKey(snapshot)
   const revision = Number(snapshot?.lyric?.revision || 0)
   const lineCount = Array.isArray(snapshot?.lyric?.lines) ? snapshot.lyric.lines.length : 0
-  return `${trackKey}:${revision}:${lineCount}:${getFavoriteStateForSnapshot(ctx, snapshot) ? 'fav' : 'normal'}`
+  const playMode = getCurrentPlayMode(ctx)
+  return `${trackKey}:${revision}:${lineCount}:${getFavoriteStateForSnapshot(ctx, snapshot) ? 'fav' : 'normal'}:${playMode}`
 }
 
 export async function sendMusicData(state, ctx, options = {}) {
