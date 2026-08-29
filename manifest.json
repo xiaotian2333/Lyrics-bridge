@@ -1,7 +1,7 @@
 {
   "id": "Lyrics-bridge",
   "name": "灵动岛歌词",
-  "version": "1.1.7",
+  "version": "1.1.8",
   "description": "仿灵动岛歌词插件",
   "author": "xiaotian2333",
   "path": "",
@@ -13,6 +13,6 @@
     "process": true
   },
   "requires": {
-    "echoMusicVersion": ">=2.2.7-beta.12"
+    "echoMusicVersion": ">=2.3.1-beta.17"
   }
 }

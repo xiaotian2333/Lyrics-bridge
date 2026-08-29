@@ -10,7 +10,7 @@ export function normalizeVolume(value) {
   const numberValue = Number(rawValue)
   if (!Number.isFinite(numberValue)) return null
 
-  const clampedValue = Math.min(1, Math.max(0, numberValue))
+  const clampedValue = Math.min(100, Math.max(0, numberValue))
   return Math.round(clampedValue * 1000) / 1000
 }
 
